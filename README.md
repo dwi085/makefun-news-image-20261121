@@ -5,13 +5,13 @@
 [![reward](https://make.fun/badge/news-image-20261121/dwi085/makefun-news-image-20261121/reward.svg)](https://make.fun/bounty/news-image-20261121?utm_source=github&utm_medium=readme&utm_campaign=news-image-20261121)
 
 One image that sums up the world's news of Saturday 21 November 2026:
-**50 sourced stories, a UTC timeline and a dotted world map with 20 pins** — drawn
+**55 sourced stories, a UTC timeline and a dotted world map with 24 pins** — drawn
 entirely by `main.ts` (Node 22, standard library only, no network).
 
 Lead story: Russian missiles hit Poland — NATO calls it a grave violation of
 its airspace. Also inside: Wall Street slides into correction, the ICJ's
-Myanmar genocide ruling, COP31 running into overtime in Antalya, Cyclone
-Akvan's landfall in Odisha, and 45 more stories from every region and beat —
+Myanmar genocide ruling, COP31 running into overtime in Antalya, Akvan's
+rain lingering over Odisha, and 50 more stories from every region and beat —
 each with its source named.
 
 ## Run

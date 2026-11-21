@@ -1,461 +1,656 @@
-// SPDX-License-Identifier: MIT
-// The World Today — Saturday 21 November 2026.
-// One 1024x1024 image summing up the day's world news: 50 sourced stories,
-// a dotted world map with 20 numbered pins, a UTC timeline, and the day in
-// numbers. Drawn entirely in code (Node 22, standard library only, no
-// network). Deterministic: two runs produce byte-identical output.
+// The World Today — 21 November 2026 (round 2)
+// One image summing up the world's news of Saturday 21 November 2026.
+// Node 22, standard library only, no network. Writes /output/entry.png
+// (or $MAKEFUN_OUTPUT_DIR/entry.png). Deterministic: two runs are
+// byte-identical. All drawing is done from scratch in this file.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { deflateSync } from 'node:zlib';
+import { deflateSync } from "node:zlib";
+import { mkdirSync, writeFileSync } from "node:fs";
 
-const W = 1024;
-const H = 1024;
-
-// Palette: newsprint paper, ink navy, signal red, muted grey-blue.
-const PAPER = [246, 241, 230];
-const INK = [20, 33, 61];
-const RED = [178, 34, 34];
-const GREY = [96, 104, 116];
-const LIGHT = [255, 252, 245];
-const SAND = [232, 224, 205];
-const BLUE = [42, 82, 130];
-const GOLD = [176, 132, 40];
-
-// ---------------------------------------------------------------- canvas
-const px = new Uint8Array(W * H * 3);
-for (let i = 0; i < W * H; i++) {
-  px[i * 3] = PAPER[0]; px[i * 3 + 1] = PAPER[1]; px[i * 3 + 2] = PAPER[2];
-}
-
-function setPx(x, y, c) {
-  if (x < 0 || y < 0 || x >= W || y >= H) return;
-  const o = (y * W + x) * 3;
-  px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2];
-}
-
-function rect(x, y, w, h, c) {
-  for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) setPx(i, j, c);
-}
-
-function hline(x, y, w, c) { rect(x, y, w, 1, c); }
-function vline(x, y, h, c) { rect(x, y, 1, h, c); }
-
-function frame(x, y, w, h, c) {
-  hline(x, y, w, c); hline(x, y + h - 1, w, c);
-  vline(x, y, h, c); vline(x + w - 1, y, h, c);
-}
-
-function disc(cx, cy, r, c) {
-  for (let j = cy - r; j <= cy + r; j++) {
-    for (let i = cx - r; i <= cx + r; i++) {
-      if ((i - cx) * (i - cx) + (j - cy) * (j - cy) <= r * r) setPx(i, j, c);
-    }
-  }
-}
-
-function ring(cx, cy, r, c) {
-  for (let a = 0; a < 360; a += 2) {
-    const t = (a * Math.PI) / 180;
-    setPx(Math.round(cx + r * Math.cos(t)), Math.round(cy + r * Math.sin(t)), c);
-  }
-}
-
-// Line via Bresenham.
-function line(x0, y0, x1, y1, c) {
-  const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-  const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-  let err = dx + dy;
-  let x = x0, y = y0;
-  for (;;) {
-    setPx(x, y, c);
-    if (x === x1 && y === y1) break;
-    const e2 = 2 * err;
-    if (e2 >= dy) { err += dy; x += sx; }
-    if (e2 <= dx) { err += dx; y += sy; }
-  }
-}
-
-// ---------------------------------------------------------------- 5x7 font
-// Each glyph: 7 strings of 5 bits. Uppercase, digits and common punctuation.
-const FONT = {
-  A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
-  B: ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
-  C: ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
-  D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
-  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
-  F: ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
-  G: ['01110', '10001', '10000', '10111', '10001', '10001', '01111'],
-  H: ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
-  I: ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
-  J: ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
-  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
-  L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
-  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
-  N: ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
-  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
-  P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
-  Q: ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
-  R: ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
-  S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
-  T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
-  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
-  V: ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
-  W: ['10001', '10001', '10001', '10101', '10101', '11011', '10001'],
-  X: ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
-  Y: ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
-  Z: ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
-  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
-  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
-  '2': ['01110', '10001', '00001', '00110', '01000', '10000', '11111'],
-  '3': ['11111', '00010', '00100', '00010', '00001', '10001', '01110'],
-  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
-  '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
-  '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
-  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
-  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
-  '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
-  '.': ['00000', '00000', '00000', '00000', '00000', '01100', '01100'],
-  ',': ['00000', '00000', '00000', '00000', '01100', '00100', '01000'],
-  ':': ['00000', '01100', '01100', '00000', '01100', '01100', '00000'],
-  ';': ['00000', '01100', '01100', '00000', '01100', '00100', '01000'],
-  "'": ['00100', '00100', '01000', '00000', '00000', '00000', '00000'],
-  '-': ['00000', '00000', '00000', '01110', '00000', '00000', '00000'],
-  '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
-  '&': ['01100', '10010', '10100', '01000', '10101', '10010', '01101'],
-  '(': ['00010', '00100', '01000', '01000', '01000', '00100', '00010'],
-  ')': ['01000', '00100', '00010', '00010', '00010', '00100', '01000'],
-  '%': ['11001', '11010', '00010', '00100', '01000', '01011', '10011'],
-  '+': ['00000', '00100', '00100', '11111', '00100', '00100', '00000'],
-  '=': ['00000', '00000', '11111', '00000', '11111', '00000', '00000'],
-  '?': ['01110', '10001', '00001', '00010', '00100', '00000', '00100'],
-  '!': ['00100', '00100', '00100', '00100', '00100', '00000', '00100'],
-  $: ['00100', '01111', '10100', '01110', '00101', '11110', '00100'],
-  ' ': ['00000', '00000', '00000', '00000', '00000', '00000', '00000'],
+// ---------------------------------------------------------------- font --
+// Hand-drawn 5x7 bitmap font, capitals + digits + punctuation only.
+// Each glyph is 7 rows of 5 bits ("1" = ink). All-caps newspaper style.
+const GLYPHS: Record<string, string[]> = {
+  A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
+  C: ["01110", "10001", "10000", "10000", "10000", "10001", "01110"],
+  D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
+  E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
+  G: ["01110", "10001", "10000", "10111", "10001", "10001", "01111"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["01110", "00100", "00100", "00100", "00100", "00100", "01110"],
+  J: ["00111", "00010", "00010", "00010", "00010", "10010", "01100"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
+  N: ["10001", "11001", "10101", "10011", "10001", "10001", "10001"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
+  R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
+  W: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
+  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
+  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00110", "01000", "10000", "11111"],
+  "3": ["11111", "00010", "00100", "00010", "00001", "10001", "01110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "11110", "00001", "00001", "10001", "01110"],
+  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "01110"],
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
+  ",": ["00000", "00000", "00000", "00000", "01100", "00100", "01000"],
+  ":": ["00000", "01100", "01100", "00000", "01100", "01100", "00000"],
+  ";": ["00000", "01100", "01100", "00000", "01100", "00100", "01000"],
+  "'": ["00100", "00100", "01000", "00000", "00000", "00000", "00000"],
+  "-": ["00000", "00000", "00000", "01110", "00000", "00000", "00000"],
+  "/": ["00001", "00010", "00010", "00100", "01000", "01000", "10000"],
+  "%": ["11001", "11010", "00010", "00100", "01000", "01011", "10011"],
+  $: ["00100", "01111", "10100", "01110", "00101", "11110", "00100"],
+  "(": ["00010", "00100", "01000", "01000", "01000", "00100", "00010"],
+  ")": ["01000", "00100", "00010", "00010", "00010", "00100", "01000"],
+  "&": ["01100", "10010", "10100", "01000", "10101", "10010", "01101"],
+  "!": ["00100", "00100", "00100", "00100", "00100", "00000", "00100"],
+  "?": ["01110", "10001", "00001", "00110", "00100", "00000", "00100"],
+  "+": ["00000", "00100", "00100", "11111", "00100", "00100", "00000"],
+  "=": ["00000", "00000", "11111", "00000", "11111", "00000", "00000"],
+  '"': ["01010", "01010", "00000", "00000", "00000", "00000", "00000"],
+  "*": ["00000", "00000", "01100", "01100", "01100", "00000", "00000"], // bullet dot
 };
+// One glyph cell is 5 wide + 1 spacing, 7 tall.
+const CHAR_W = 6;
+const CHAR_H = 7;
 
-function textWidth(s, scale) {
-  return s.length * (5 * scale + 1) - 1;
-}
-
-function drawText(x, y, s, scale, c) {
-  let cx = x;
-  for (const ch of s.toUpperCase()) {
-    const g = FONT[ch] || FONT['?'];
-    for (let r = 0; r < 7; r++) {
-      for (let col = 0; col < 5; col++) {
-        if (g[r][col] === '1') rect(cx + col * scale, y + r * scale, scale, scale, c);
-      }
-    }
-    cx += 5 * scale + 1;
-  }
-  return cx;
-}
-
-function textCentered(cx, y, s, scale, c) {
-  const w = s.length * (5 * scale + 1) - 1;
-  drawText(cx - Math.floor(w / 2), y, s, scale, c);
-}
-
-// ---------------------------------------------------------------- PNG writer
-const CRC_TABLE = (() => {
-  const t = new Int32Array(256);
+// ----------------------------------------------------------------- png --
+// Minimal deterministic PNG encoder: 8-bit RGB, no interlace, one IDAT.
+const CRC_TABLE: number[] = (() => {
+  const table: number[] = [];
   for (let n = 0; n < 256; n++) {
     let c = n;
     for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c;
+    table[n] = c >>> 0;
   }
-  return t;
+  return table;
 })();
 
-function crc32(buf) {
+function crc32(buf: Buffer): number {
   let c = 0xffffffff;
   for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 
-function chunk(type, data) {
+function pngChunk(type: string, data: Buffer): Buffer {
   const out = Buffer.alloc(12 + data.length);
   out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, 'ascii');
+  out.write(type, 4, 4, "ascii");
   data.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, 'ascii'), data])), 8 + data.length);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), 0);
+  crc.copy(out, 8 + data.length);
   return out;
 }
 
-function writePng(path) {
-  const raw = Buffer.alloc(H * (1 + W * 3));
-  for (let y = 0; y < H; y++) {
-    raw[y * (1 + W * 3)] = 0;
-    raw.set(px.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
-  }
+function encodePNG(width: number, height: number, rgb: Buffer): Buffer {
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
-  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
-  const png = Buffer.concat([
+  ihdr.writeUInt32BE(width, 0);
+  ihdr.writeUInt32BE(height, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // colour type RGB
+  ihdr[10] = 0; // compression
+  ihdr[11] = 0; // filter
+  ihdr[12] = 0; // interlace
+  // Raw scanlines: filter byte 0 + RGB rows.
+  const raw = Buffer.alloc(height * (1 + width * 3));
+  for (let y = 0; y < height; y++) {
+    raw[y * (1 + width * 3)] = 0;
+    rgb.copy(raw, y * (1 + width * 3) + 1, y * width * 3, (y + 1) * width * 3);
+  }
+  const idat = deflateSync(raw, { level: 9 });
+  return Buffer.concat([
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk('IHDR', ihdr),
-    chunk('IDAT', deflateSync(raw, { level: 9 })),
-    chunk('IEND', Buffer.alloc(0)),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", idat),
+    pngChunk("IEND", Buffer.alloc(0)),
   ]);
-  writeFileSync(path, png);
-  return png.length;
 }
 
-// ---------------------------------------------------------------- news data
-// All 50 stories were first reported on Saturday 21 November 2026 (UTC)
-// unless noted; each names its source. Headlines are capped at two short
-// lines so they stay readable at thumbnail size.
+// -------------------------------------------------------------- canvas --
+const W = 1024;
+const H = 1024;
+const PAPER: [number, number, number] = [246, 241, 231]; // warm newsprint
+const INK: [number, number, number] = [22, 22, 22];
+const NAVY: [number, number, number] = [22, 35, 63];
+const RED: [number, number, number] = [179, 38, 30];
+const WHITE: [number, number, number] = [255, 253, 247];
+const GREY: [number, number, number] = [110, 108, 100];
+const LAND: [number, number, number] = [168, 186, 205];
+const SEA: [number, number, number] = [232, 238, 244];
 
-// Continent outlines as rough lon/lat polygons (union = land).
-const LAND = [
-  // North America
-  [[-168, 66], [-150, 70], [-130, 71], [-115, 73], [-95, 80], [-82, 76], [-75, 72], [-65, 62], [-55, 47], [-65, 44], [-70, 42], [-76, 35], [-81, 26], [-84, 20], [-90, 14], [-95, 18], [-104, 22], [-112, 28], [-120, 34], [-124, 40], [-125, 49], [-135, 58], [-150, 60], [-165, 60]],
-  // Greenland
-  [[-58, 64], [-52, 60], [-44, 60], [-40, 68], [-32, 76], [-22, 76], [-25, 70], [-40, 64], [-55, 62]],
-  // South America
-  [[-80, 9], [-75, 11], [-62, 9], [-52, 4], [-50, 0], [-41, -3], [-35, -8], [-35, -18], [-40, -28], [-48, -28], [-55, -35], [-62, -39], [-68, -50], [-70, -55], [-73, -45], [-73, -30], [-70, -18], [-77, -12], [-81, -4]],
-  // Europe
-  [[-10, 36], [-9, 43], [-2, 48], [0, 50], [4, 53], [8, 57], [10, 59], [18, 56], [21, 55], [24, 58], [28, 60], [30, 62], [30, 68], [26, 71], [18, 70], [12, 68], [6, 62], [5, 58], [-2, 51], [-5, 50], [-10, 43]],
-  // Africa
-  [[-6, 35], [0, 36], [10, 37], [20, 32], [30, 31], [35, 28], [37, 22], [40, 15], [43, 11], [48, 11], [51, 12], [46, 2], [40, -10], [35, -18], [33, -26], [28, -33], [20, -35], [16, -29], [12, -18], [9, -4], [9, 4], [4, 6], [-8, 5], [-13, 8], [-17, 15], [-16, 21], [-14, 26], [-10, 31]],
-  // Asia
-  [[30, 36], [35, 36], [36, 42], [41, 41], [44, 40], [49, 38], [54, 37], [57, 27], [60, 25], [66, 25], [70, 21], [73, 18], [77, 12], [80, 8], [83, 10], [88, 15], [91, 16], [94, 17], [98, 10], [100, 7], [103, 2], [105, 9], [108, 12], [110, 20], [114, 22], [119, 25], [121, 28], [122, 31], [126, 38], [127, 40], [130, 42], [135, 44], [138, 46], [141, 50], [142, 54], [145, 59], [150, 60], [156, 59], [160, 62], [163, 64], [170, 66], [178, 65], [178, 68], [170, 70], [160, 70], [150, 72], [140, 73], [130, 72], [120, 73], [110, 74], [100, 76], [90, 75], [80, 73], [70, 72], [60, 69], [52, 68], [45, 68], [38, 68], [33, 67], [30, 70], [30, 62], [27, 59], [24, 58], [21, 55], [18, 56], [12, 55], [8, 57], [5, 58], [0, 58], [3, 53], [1, 51], [5, 50], [10, 53], [15, 54], [20, 54], [25, 54], [28, 54], [28, 50], [28, 45], [23, 40], [20, 40], [15, 40], [12, 44], [8, 44], [3, 43], [0, 44], [-2, 44], [-2, 40], [0, 39], [5, 39], [10, 38], [15, 38], [20, 36], [25, 36], [30, 36]],
-  // Australia
-  [[113, -22], [114, -30], [115, -35], [120, -34], [125, -32], [130, -32], [135, -35], [140, -38], [146, -39], [150, -37], [153, -32], [153, -27], [150, -22], [146, -19], [142, -14], [142, -11], [137, -12], [135, -15], [132, -12], [130, -13], [126, -14], [122, -17], [118, -20]],
-  // Indonesia / SE Asia islands
-  [[95, 5], [98, 3], [100, 0], [103, -3], [106, -6], [110, -7], [114, -8], [118, -9], [122, -10], [126, -9], [130, -3], [134, -2], [138, -2], [141, -4], [138, -8], [132, -8], [126, -9], [120, -10], [114, -9], [108, -7], [102, -4], [98, 1]],
-  // New Zealand
-  [[167, -45], [170, -42], [174, -38], [176, -38], [178, -37], [175, -41], [172, -43], [168, -46]],
-  // United Kingdom
-  [[-5, 50], [-3, 53], [-5, 56], [-3, 58], [-1, 57], [0, 53], [1, 51], [-3, 50]],
-  // Japan
-  [[130, 31], [132, 33], [135, 34], [137, 35], [139, 37], [141, 39], [142, 42], [144, 44], [141, 45], [140, 41], [138, 38], [135, 35], [132, 33]],
-  // Iceland
-  [[-22, 64], [-18, 63], [-14, 64], [-15, 66], [-20, 66], [-24, 65]],
-  // Madagascar
-  [[44, -16], [47, -15], [50, -16], [50, -20], [47, -25], [44, -25], [43, -20]],
-];
+const px = Buffer.alloc(W * H * 3);
+for (let i = 0; i < W * H; i++) {
+  px[i * 3] = PAPER[0];
+  px[i * 3 + 1] = PAPER[1];
+  px[i * 3 + 2] = PAPER[2];
+}
 
-// [number, lon, lat, dx, dy] — dx/dy nudge the drawn pin off its true spot
-// (with a leader line) where two pins would collide.
-const PINS = [
-  [1, 19, 52, 0, 0], [2, -74, 41, 0, 0], [3, 4.3, 52.1, 0, 0],
-  [4, 4.4, 50.8, 18, 4], [5, 114, 22.5, 0, 0], [6, 46.7, 24.6, -14, -6],
-  [7, -118, 34, 0, 0], [8, 85, 20, 10, -8], [9, 12.5, 55.7, 4, -14],
-  [10, 30.7, 36.9, -12, 10], [11, 2.35, 48.85, -16, 2], [12, 35.2, 31.8, 0, 0],
-  [13, 34.45, 31.5, 13, -9], [14, 82, 60, 0, 0], [15, 33.4, 47.9, 0, 0],
-  [16, 56.5, 26.5, 14, -10], [17, 174.8, -41.3, 0, 0], [18, 54.4, 24.5, 12, 10],
-  [19, 7.7, 45.1, 14, 14], [20, 72.9, 19.1, 0, 0],
-];
+function setPx(x: number, y: number, c: [number, number, number]): void {
+  if (x < 0 || y < 0 || x >= W || y >= H) return;
+  const i = (y * W + x) * 3;
+  px[i] = c[0];
+  px[i + 1] = c[1];
+  px[i + 2] = c[2];
+}
 
-const PIN_KEY = [
-  'PINS: 1 POLAND  2 NEW YORK  3 THE HAGUE  4 BRUSSELS  5 SHENZHEN  6 RIYADH  7 LOS ANGELES  8 ODISHA  9 COPENHAGEN  10 ANTALYA',
-  '11 PARIS  12 JERUSALEM  13 GAZA  14 SIBERIA  15 KRYVYI RIH  16 HORMUZ  17 WELLINGTON  18 ABU DHABI  19 TURIN  20 MUMBAI',
-];
+function fillRect(x: number, y: number, w: number, h: number, c: [number, number, number]): void {
+  const x0 = Math.max(0, Math.floor(x));
+  const y0 = Math.max(0, Math.floor(y));
+  const x1 = Math.min(W, Math.ceil(x + w));
+  const y1 = Math.min(H, Math.ceil(y + h));
+  for (let yy = y0; yy < y1; yy++) {
+    for (let xx = x0; xx < x1; xx++) setPx(xx, yy, c);
+  }
+}
 
-// [time, line1, line2] — UTC moments on 21 November 2026.
-const TIMELINE = [
-  ['00:19', 'RAHUL NEARS TON', 'WELLINGTON TEST'],
-  ['02:27', 'KRYVYI RIH TOLL:', '2 DEAD, 42 HURT'],
-  ['03:25', 'SIBERIA CRASH:', '19 DEAD'],
-  ['03:34', 'US SANCTIONS', '4 IRANIANS'],
-  ['03:52', 'EISENKOT TAPPED', 'TO LEAD ISRAEL'],
-  ['06:01', 'INDIA 239/1', 'AT LUNCH, DAY 3'],
-  ['SAT AM', 'COP31 3RD DRAFT', 'DUE IN ANTALYA'],
-];
+function hline(x: number, y: number, w: number, c: [number, number, number], t = 1): void {
+  fillRect(x, y, w, t, c);
+}
 
-// [big, label] — the day in numbers.
-const STATS = [
-  ['-3.7%', 'S&P 500 FALL, AI SELLOFF'],
-  ['146,000', 'PROTESTERS IN FRANCE'],
-  ['900,000', 'AI CHIPS OK\'D FOR CHINA'],
-  ['1BN EURO', 'EU MILITARY AID, UKRAINE'],
-  ['19', 'DEAD IN SIBERIA PLANE CRASH'],
-  ['42', 'HURT IN KRYVYI RIH STRIKE'],
-];
+function vline(x: number, y: number, h: number, c: [number, number, number], t = 1): void {
+  fillRect(x, y, t, h, c);
+}
 
-// [line1, line2, source] — 50 stories, first reported 21 Nov 2026 (UTC).
-const STORIES = [
-  ['RUSSIAN MISSILE', 'HIT POLAND', 'REUTERS'],
-  ['S&P 500 SLIDES', 'INTO CORRECTION', 'AP'],
-  ['ICJ: MYANMAR', 'DID GENOCIDE', 'ICJ'],
-  ['UK-EU SIGN FOOD', 'CARBON DEALS', 'AP'],
-  ['TRUMP-XI-PUTIN', 'FEW RESULTS', 'AP'],
-  ['HOUTHIS STRIKE', 'RIYADH, SAUDI', 'AP'],
-  ['PALISADES FIRE', 'ARSON CONVICT', 'AP'],
-  ['PANCREATIC PILL', 'BREAKTHROUGH', 'ONE TURN'],
-  ['DENMARK FOILS', 'RUSSIA HIT PLOT', 'PET'],
-  ['CYCLONE AKVAN', 'HITS ODISHA', 'IMD'],
-  ['BANKS HIT BY', 'VENDOR HACK', 'JAGRAN JOSH'],
-  ['COP31 OVERTIME:', 'NO DEAL YET', 'UN NEWS'],
-  ['FRANCE PROTESTS', '4TH WEEKEND', 'PARIS EYE'],
-  ['HERZOG TAPS', 'EISENKOT LEADS', 'PARIS EYE'],
-  ['4 NATIONS: LET', 'AID REACH GAZA', 'PARIS EYE'],
-  ['US DETAILS $12B', 'VENEZUELA CASH', 'STATE DEPT'],
-  ['RUSSIAN PLANE', 'CRASH: 19 DEAD', 'MUNICH EYE'],
-  ['NVIDIA PROBES', 'CEO SPY CLAIM', 'MUNICH EYE'],
-  ['US OK\'D 900K', 'AI CHIPS, CHINA', 'HOUSE PANEL'],
-  ['FRENCH POLICE', 'GUILTY: ZECLER', 'MUNICH EYE'],
-  ['EU: 1BN EURO', 'UKRAINE MIL AID', 'EU COUNCIL'],
-  ['US SANCTIONS', 'MOB, BIKER GANG', 'TREASURY'],
-  ['US SANCTIONS 4', 'IRANIANS: OIL', 'OFAC'],
-  ['KRYVYI RIH: 2', 'DEAD, 42 HURT', 'APPISTOS'],
-  ['TANKER HIT, ON', 'FIRE IN HORMUZ', 'UKMTO'],
-  ['TRUMP PARDONS', 'PETE ROSE', 'APPISTOS'],
-  ['SENATE REJECTS', 'IRAN WAR POWERS', 'APPISTOS'],
-  ['ARGENTINA BACKS', 'DISABILITY LAW', 'APPISTOS'],
-  ['UK PLEDGES', '1,000+ DRONES', 'APPISTOS'],
-  ['IEA: NO GOING', 'BACK ON ENERGY', 'AP'],
-  ['JAPAN, INDIA', 'BOOST DEFENCE', 'AP'],
-  ['GAZA KIDS', '1 IN 3 VIOLATED', 'SAVE CHILDREN'],
-  ['INDIAN JAILED', 'IN SIKH PLOT', 'AP'],
-  ['IRAQ RETAKES', 'JURF AL-SAKHAR', 'KSPEARLS'],
-  ['S. AFRICA', 'MURDERS FALL', 'KSPEARLS'],
-  ['ECB BOARD RACE:', 'BOONE, BRUNN.', 'APPISTOS'],
-  ['GOLD TUMBLES', 'IN INDIA', 'JAGRAN JOSH'],
-  ['MEDVEDEV BEATS', 'TIAFOE 6-3, 6-4', 'ATP FINALS'],
-  ['RAHUL NEARS TON', 'INDIA FIGHTBACK', 'REUTERS'],
-  ['UAE BULLS WIN', 'T10 BY 24 RUNS', 'GYAN HIGYAN'],
-  ['INDIA U17 QUAL.', 'FOR ASIAN CUP', 'IANS'],
-  ['BENGALURU TOP', 'OF ISL TABLE', 'IANS'],
-  ['HYUNDAI UNVEILS', 'NEW ELANTRA', 'JAGRAN JOSH'],
-  ['SENSEX +898 PTS', 'TO 83,920', 'JAGRAN JOSH'],
-  ['NATO MEMBERSHIP', 'FOR LAND SWAP', 'MEDITERRANEE'],
-  ['IRAN WAR COST', '$48.3BN SO FAR', 'MEDITERRANEE'],
-  ['RUSSIA SHIPS', 'FUEL TO BRAZIL', 'KSPEARLS'],
-  ['EU: 7.9BN EURO', 'AID TO UKRAINE', 'KSPEARLS'],
-  ['350 KIDS HELD', 'ISRAELI JAILS', 'KSPEARLS'],
-  ['NIUE WINS', 'EARTHSHOT 2026', 'SMC NZ'],
-];
+// Filled circle.
+function disc(cx: number, cy: number, r: number, c: [number, number, number]): void {
+  for (let dy = -r; dy <= r; dy++) {
+    const dx = Math.floor(Math.sqrt(r * r - dy * dy));
+    fillRect(cx - dx, cy + dy, dx * 2 + 1, 1, c);
+  }
+}
 
-// ---------------------------------------------------------------- map
-function insidePoly(lon, lat, poly) {
-  let inside = false;
-  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    const xi = poly[i][0], yi = poly[i][1];
-    const xj = poly[j][0], yj = poly[j][1];
-    if (yi > lat !== yj > lat && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) {
-      inside = !inside;
+// Scanline polygon fill. pts are [x, y] in canvas pixels.
+function fillPoly(pts: Array<[number, number]>, c: [number, number, number]): void {
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const [, y] of pts) {
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  for (let y = Math.max(0, Math.floor(minY)); y <= Math.min(H - 1, Math.ceil(maxY)); y++) {
+    const xs: number[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const [x1, y1] = pts[i];
+      const [x2, y2] = pts[(i + 1) % pts.length];
+      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+        xs.push(x1 + ((y - y1) * (x2 - x1)) / (y2 - y1));
+      }
+    }
+    xs.sort((a, b) => a - b);
+    for (let k = 0; k + 1 < xs.length; k += 2) {
+      fillRect(Math.round(xs[k]), y, Math.round(xs[k + 1]) - Math.round(xs[k]), 1, c);
     }
   }
-  return inside;
 }
 
-function onLand(lon, lat) {
-  for (const p of LAND) if (insidePoly(lon, lat, p)) return true;
-  return false;
+// ------------------------------------------------------------ text -----
+function textWidth(s: string, scale: number): number {
+  if (s.length === 0) return 0;
+  return s.length * CHAR_W * scale - scale;
 }
 
-// Map panel: equirectangular, lon -180..180, lat 80..-55.
-const MAP = { x0: 36, y0: 198, w: 512, h: 192 };
-function proj(lon, lat) {
+function drawChar(ch: string, x: number, y: number, scale: number, c: [number, number, number]): void {
+  const g = GLYPHS[ch];
+  if (!g) return;
+  for (let row = 0; row < 7; row++) {
+    const bits = g[row];
+    for (let col = 0; col < 5; col++) {
+      if (bits[col] === "1") fillRect(x + col * scale, y + row * scale, scale, scale, c);
+    }
+  }
+}
+
+// Draws one line, returns its pixel width. The font is capitals-only,
+// so all text is upper-cased here to keep mixed-case copy legible.
+function drawText(s: string, x: number, y: number, scale: number, c: [number, number, number]): number {
+  s = s.toUpperCase();
+  let cx = x;
+  for (const ch of s) {
+    drawChar(ch, cx, y, scale, c);
+    cx += CHAR_W * scale;
+  }
+  return cx - x - scale;
+}
+
+function drawTextCentered(s: string, cx: number, y: number, scale: number, c: [number, number, number]): void {
+  drawText(s, cx - Math.floor(textWidth(s, scale) / 2), y, scale, c);
+}
+
+// Greedy word wrap to lines no wider than maxW px.
+function wrap(s: string, scale: number, maxW: number): string[] {
+  const words = s.split(" ");
+  const lines: string[] = [];
+  let cur = "";
+  for (const w of words) {
+    const trial = cur === "" ? w : cur + " " + w;
+    if (textWidth(trial, scale) <= maxW || cur === "") {
+      cur = trial;
+    } else {
+      lines.push(cur);
+      cur = w;
+    }
+  }
+  if (cur !== "") lines.push(cur);
+  return lines;
+}
+
+// Draw wrapped text in a box; returns the y just below the last line.
+function drawPara(s: string, x: number, y: number, scale: number, maxW: number, c: [number, number, number], leading?: number): number {
+  const lh = leading ?? 7 * scale + 2;
+  const lines = wrap(s, scale, maxW);
+  let yy = y;
+  for (const ln of lines) {
+    drawText(ln, x, yy, scale, c);
+    yy += lh;
+  }
+  return yy;
+}
+
+// ---------------------------------------------------------------- data --
+// 55 stories, all events or first reports of Saturday 21 November 2026,
+// each with the outlet or institution that reported it. Beats:
+// C conflict, P politics, M markets, L climate, H health, S science,
+// T sport, W world. Colours keyed in the footer legend.
+const BEATS: Record<string, [number, number, number]> = {
+  C: [179, 38, 30],
+  P: [31, 78, 121],
+  M: [46, 125, 50],
+  L: [14, 124, 123],
+  H: [142, 36, 170],
+  S: [93, 64, 55],
+  T: [230, 81, 0],
+  W: [97, 97, 97],
+};
+
+type Lead = { head: string; body: string; src: string };
+const LEADS: Lead[] = [
+  {
+    head: "MISSILES LAND IN POLAND",
+    body: "Russia fires 400+ drones and 110 missiles at Ukraine. Two Kh-101s and a jet drone crash in south-east Poland. Tusk: provocation; NATO: grave violation.",
+    src: "AP - BBC",
+  },
+  {
+    head: "AI ROUT PUSHES S&P AND DOW INTO CORRECTION",
+    body: "Wall Street slides as doubts about AI spending grow. Nasdaq falls 5.3%, wiping out all its 2026 gains. Nikkei drops 5.1%. Nvidia sinks 14% as the SEC opens a probe into its books.",
+    src: "FT - WSJ",
+  },
+  {
+    head: "ICJ FINDS MYANMAR GUILTY OF GENOCIDE",
+    body: "The world court rules Myanmar responsible for genocide against the Rohingya. Survivors in Bangladesh welcome the verdict and say they want to go home.",
+    src: "ICJ - REUTERS",
+  },
+];
+
+type Story = { beat: string; head: string; body: string; src: string };
+const STORIES: Story[] = [
+  { beat: "C", head: "HOUTHIS FIRE ON RIYADH AGAIN", body: "Coalition stops three missiles on a third night of attacks.", src: "AL JAZEERA" },
+  { beat: "C", head: "ISRAELI STRIKES KILL IN GAZA", body: "Strikes kill Palestinians; violence flares in the West Bank.", src: "ONE TURN" },
+  { beat: "C", head: "HAITI BLAST KILLS SALVADORAN TROOPS", body: "Soldiers die in explosives attack on the Port-au-Prince mission.", src: "ONE TURN" },
+  { beat: "C", head: "IRAQ POLICE ENTER JURF AL-SAKHAR", body: "Federal police move in under a new security deal.", src: "IQMIA" },
+  { beat: "P", head: "UK AND EU SIGN BIG POST-BREXIT DEALS", body: "Food, carbon, youth pacts for 100,000 young Britons.", src: "GUARDIAN" },
+  { beat: "P", head: "TRUMP DEFENDS TIES TO PUTIN AND XI", body: "Trump calls Putin a friend; Zelenskyy calls Putin a killer.", src: "BBC" },
+  { beat: "C", head: "POLAND SEEKS MORE NATO JETS", body: "Warsaw invokes Article 4, seeks AWACS and F-35s.", src: "SOFX" },
+  { beat: "P", head: "SPAIN HEADS TO 29 NOVEMBER VOTE", body: "Conservatives gain as the election campaign opens in Madrid.", src: "ONE TURN" },
+  { beat: "P", head: "ANC FIGHTS TO HOLD ITS CITIES", body: "Worst result since 1994 at 31%; DA takes Johannesburg and Pretoria.", src: "BBC" },
+  { beat: "W", head: "MLAMBO-NGCUKA DIES AT 71", body: "South Africa's first woman deputy president dies.", src: "REUTERS" },
+  { beat: "P", head: "NEPAL'S NEW PM FACES INDIA TEST", body: "Balendra Shah makes his first visit to New Delhi.", src: "BBC" },
+  { beat: "C", head: "DENMARK: RUSSIA PLOTTED KILLING", body: "Copenhagen says Moscow plotted to kill a US-Ukrainian rapper.", src: "BBC" },
+  { beat: "W", head: "FRENCH POLICE GUILTY OVER BEATING", body: "Officers sentenced for the assault on music producer Michel Zecler.", src: "BBC" },
+  { beat: "P", head: "HEGSETH CURTAILS CANADA DEFENCE TIES", body: "US defence secretary scales back relations with Ottawa.", src: "WASH. POST" },
+  { beat: "P", head: "MAMDANI: CLOSE RIKERS BY 2032", body: "New York's mayor-elect sets a date to shut the jail.", src: "BBC" },
+  { beat: "L", head: "COP31 RUNS INTO OVERTIME", body: "Draft drops fossil fuels; finance stalls in Antalya.", src: "PANA" },
+  { beat: "H", head: "CANCER PILL BREAKTHROUGH", body: "Pill daraxonrasib makes tumours undetectable in 1 in 12.", src: "ONE TURN" },
+  { beat: "H", head: "US LOSES MEASLES-FREE TAG", body: "America is no longer certified as having eliminated measles.", src: "ONE TURN" },
+  { beat: "S", head: "NASA HALTS MARS SCIENCE", body: "Hardware troubles pause Perseverance and Mars Odyssey work.", src: "IQMIA" },
+  { beat: "C", head: "ISRAEL PLANS WEST BANK CITY", body: "Plan advances for a new city of 200,000 settlers.", src: "IQMIA" },
+  { beat: "S", head: "RIEMANN PROOF CLAIMED", body: "Anthropic researcher says AI helped prove the great conjecture.", src: "HORIZON" },
+  { beat: "W", head: "FBI CRIME DATABASE HACKED", body: "FBI and Agriculture Dept hit as US outages spread.", src: "HORIZON" },
+  { beat: "M", head: "BAYER PAYS $7.25BN OVER ROUNDUP", body: "US judge approves the payout to end weedkiller claims.", src: "HORIZON" },
+  { beat: "M", head: "BITCOIN SLIDES TOWARD $62,000", body: "Crypto liquidations pass $2bn in the market sell-off.", src: "IQMIA" },
+  { beat: "W", head: "19 YEARS OVER PANNUN PLOT", body: "Indian man jailed in the US over a murder-for-hire case.", src: "IQMIA" },
+  { beat: "W", head: "PALISADES FIRE ARSONIST GUILTY", body: "Los Angeles man convicted of starting the deadly blaze.", src: "BBC" },
+  { beat: "W", head: "PERU SHAKEN BY 6.9 QUAKE", body: "Strong tremor rattles the Andes.", src: "HORIZON" },
+  { beat: "W", head: "BASRA PLANT FIRE KILLS FOUR", body: "Blaze at an Iraqi power plant kills at least four.", src: "HORIZON" },
+  { beat: "L", head: "INDONESIA HIT BY FOREST FIRES", body: "Massive blazes spread across the archipelago.", src: "HORIZON" },
+  { beat: "L", head: "AKVAN'S RAIN LINGERS OVER INDIA", body: "Heavy rain soaks Odisha and Bengal a day after landfall.", src: "IMD" },
+  { beat: "P", head: "GEN Z PROTESTS SPREAD IN EUROPE", body: "Youth marches reach 25 countries, from Berlin outward.", src: "ONE TURN" },
+  { beat: "W", head: "FIONA THE HIPPO DIES IN CINCINNATI", body: "Beloved young hippo dies after eating a visitor's hat.", src: "CINCINNATI ZOO" },
+  { beat: "W", head: "600 WOMEN KILLED IN SOUTH AFRICA", body: "Femicide toll over three months shocks the nation.", src: "BBC" },
+  { beat: "W", head: "US RELEASES MORE UFO FOOTAGE", body: "Newly declassified videos were filmed in the Middle East.", src: "BBC" },
+  { beat: "C", head: "LIFE UNDER SIEGE IN YEMEN", body: "A mother tells her son the shelling is just fireworks.", src: "BBC" },
+  { beat: "M", head: "ANTHROPIC SHARES SLIDE 9%", body: "Record $81bn IPO fades as AI doubts grow on Wall Street.", src: "WSJ" },
+  { beat: "M", head: "NVIDIA FACES SEC ACCOUNTING PROBE", body: "Regulator examines the chipmaker's books after Huang resigns.", src: "FT" },
+  { beat: "M", head: "GOLD SLIDES 4.6% TO $3,515", body: "Bullion's worst week as the Fed may raise rates again.", src: "HORIZON" },
+  { beat: "M", head: "BRENT CRUDE EASES TO $89.95", body: "Oil slips 2.2% as the market rout spreads.", src: "HORIZON" },
+  { beat: "M", head: "LEAPMOTOR PROFITS PLUNGE 73%", body: "EV startup's Q3 profit falls despite record deliveries.", src: "CHINA BIZ BUZZ" },
+  { beat: "W", head: "78 RANSOMWARE CLAIMS IN 48 HOURS", body: "Attacks recorded worldwide, RansomLook data shows.", src: "HORIZON" },
+  { beat: "T", head: "ALCARAZ STAYS PERFECT IN TURIN", body: "Spaniard beats Cobolli to stay unbeaten at the ATP Finals.", src: "ONE TURN" },
+  { beat: "T", head: "A LIM KIM LEADS AFTER AN ACE", body: "Ace on the 16th puts the Korean three clear in Naples.", src: "ONE TURN" },
+  { beat: "T", head: "CHOI ADVANCES IN SEOUL", body: "Korean star through early short-track rounds in Seoul.", src: "ONE TURN" },
+  { beat: "T", head: "SHIMADA LEADS FINLANDIA TROPHY", body: "Japan's Mao Shimada tops the short program in Espoo.", src: "ONE TURN" },
+  { beat: "T", head: "SPIRIT REACH NWSL FINAL", body: "Washington Spirit advance to the championship match.", src: "ONE TURN" },
+  { beat: "T", head: "WREXHAM WIN 2-0 AT BLACKBURN", body: "Third straight Championship win for the Red Dragons.", src: "BBC" },
+  { beat: "T", head: "CLEMSON HOLDS OFF DUKE 20-10", body: "Tigers win in Durham; Sheppard runs for 116 yards.", src: "BVM SPORTS" },
+  { beat: "S", head: "FISH FOUND TO LIVE PAST 100", body: "Radiocarbon dating shows a blue sucker over a century old.", src: "ONE TURN" },
+  { beat: "S", head: "LASER FLASHES BEAT ATOM SCALE", body: "X-ray laser makes bursts shorter than the gaps between atoms.", src: "ONE TURN" },
+  { beat: "S", head: "SUPERMOUNTAINS UNDER ANTARCTICA", body: "Ancient buried ranges mapped beneath the ice sheet.", src: "ONE TURN" },
+  { beat: "S", head: "CURIOSITY SPOTS MARTIAN CLOUDS", body: "Rover captures drifting twilight clouds in Gale Crater.", src: "ONE TURN" },
+];
+
+// 24 map pins: [label-or-null, lon, lat]. Labels drawn for the flagged few.
+const PINS: Array<[string | null, number, number]> = [
+  ["KYIV", 30.5, 50.4],
+  ["WARSAW", 21.0, 52.2],
+  [null, 4.3, 52.1],
+  ["NEW YORK", -74.0, 40.7],
+  [null, -0.1, 51.5],
+  [null, 4.4, 50.8],
+  ["ANTALYA", 30.7, 36.9],
+  ["GAZA", 34.5, 31.5],
+  [null, -72.3, 18.5],
+  [null, 46.7, 24.7],
+  [null, 44.4, 33.3],
+  [null, -3.7, 40.4],
+  [null, 18.4, -33.9],
+  [null, 85.3, 27.7],
+  [null, 96.2, 19.8],
+  [null, 92.0, 21.4],
+  ["LIMA", -77.0, -12.0],
+  [null, 47.8, 30.5],
+  ["JAKARTA", 106.8, -6.2],
+  [null, 84.9, 19.3],
+  [null, 7.7, 45.1],
+  ["SEOUL", 127.0, 37.5],
+  [null, -77.0, 38.9],
+  [null, 28.0, -26.2],
+];
+
+// The day in time, UTC. All times are publication times of the cited report.
+const TIMELINE: Array<[string, string, string]> = [
+  ["00:48", "ANC FIGHTS TO HOLD SOUTH AFRICA'S CITIES", "BBC"],
+  ["03:46", "AP: RUSSIAN MISSILE DOWN IN POLAND", "AP"],
+  ["04:01", "WREXHAM WIN 2-0 AT BLACKBURN", "BBC SPORT"],
+  ["04:52", "NATO CHIEF: GRAVE VIOLATION IN POLAND", "NATO"],
+  ["05:44", "MLAMBO-NGCUKA DIES AT 71", "REUTERS"],
+  ["12:00", "ANC TURNS TO SMALLER PARTIES FOR CITY DEALS", "BBC"],
+];
+
+// Friday's market close, as reported on 21 November.
+const TICKER_A = "MARKETS - FRIDAY CLOSE:  S&P 500 6,910.39 -3.70%  *  NASDAQ 22,617.73 -5.28%  *  NIKKEI 56,436.65 -5.06%  *  FTSE 100 10,346.34 -1.02%  *  DAX 24,802.78 -2.60%";
+const TICKER_B = "CAC 40 7,927.75 -1.89%  *  HANG SENG 22,410.8 -1.89%  *  BRENT $89.95 -2.21%  *  GOLD $3,515.40 -4.62%  *  NAT GAS $3.75 +14.69%  *  BITCOIN ABOUT $62,000";
+
+// ----------------------------------------------------------------- map --
+// Simplified continent outlines as [lon, lat] points (equirectangular).
+const CONTINENTS: Array<Array<[number, number]>> = [
+  [ // North America
+    [-168, 66], [-150, 70], [-135, 69], [-125, 71], [-115, 68], [-105, 68], [-95, 69],
+    [-85, 66], [-80, 62], [-75, 62], [-65, 60], [-60, 55], [-55, 52], [-60, 47],
+    [-65, 44], [-70, 42], [-74, 39], [-76, 35], [-80, 32], [-81, 26], [-84, 30],
+    [-89, 29], [-90, 21], [-94, 18], [-97, 16], [-93, 15], [-88, 14], [-84, 12],
+    [-80, 9], [-79, 9], [-83, 10], [-87, 13], [-91, 14], [-95, 16], [-100, 17],
+    [-105, 20], [-110, 23], [-114, 28], [-117, 32], [-122, 37], [-124, 42], [-125, 48],
+    [-130, 54], [-135, 58], [-145, 60], [-155, 58], [-162, 58],
+  ],
+  [ // South America
+    [-79, 9], [-77, 7], [-72, 11], [-68, 11], [-62, 9], [-55, 6], [-52, 4],
+    [-50, 0], [-44, -3], [-38, -5], [-35, -8], [-37, -13], [-40, -20], [-48, -26],
+    [-52, -32], [-58, -38], [-65, -41], [-68, -47], [-70, -52], [-73, -54], [-72, -48],
+    [-73, -40], [-72, -32], [-70, -23], [-70, -18], [-76, -14], [-79, -8], [-81, -4],
+    [-80, 1], [-79, 5],
+  ],
+  [ // Africa
+    [-17, 15], [-16, 20], [-12, 27], [-10, 31], [-6, 35], [-2, 35], [3, 37],
+    [10, 37], [15, 32], [20, 32], [25, 32], [30, 31], [33, 27], [36, 22],
+    [38, 18], [40, 15], [43, 12], [46, 11], [51, 11], [51, 5], [48, 0],
+    [42, -5], [40, -10], [38, -15], [35, -20], [33, -26], [31, -29], [27, -33],
+    [20, -35], [16, -32], [14, -27], [12, -20], [12, -15], [13, -10], [9, -2],
+    [9, 4], [4, 6], [-8, 4], [-13, 8], [-16, 12],
+  ],
+  [ // Europe
+    [-10, 37], [-9, 39], [-9, 43], [-4, 44], [-2, 47], [-4, 48], [-2, 50],
+    [0, 51], [2, 53], [5, 53], [8, 55], [8, 57], [10, 59], [12, 58], [18, 56],
+    [21, 55], [24, 58], [26, 59], [28, 60], [30, 62], [28, 65], [24, 66],
+    [20, 68], [18, 69], [15, 68], [12, 65], [10, 62], [6, 58], [5, 60],
+    [5, 58], [0, 55], [-2, 52], [-5, 50], [-8, 48], [-9, 43],
+  ],
+  [ // Asia
+    [30, 62], [35, 65], [40, 68], [50, 69], [60, 69], [70, 72], [80, 73],
+    [90, 75], [100, 77], [110, 74], [120, 73], [130, 72], [140, 72], [150, 70],
+    [160, 70], [170, 67], [178, 65], [178, 62], [170, 60], [162, 56], [160, 53],
+    [156, 51], [150, 48], [142, 50], [140, 45], [138, 40], [135, 35], [130, 33],
+    [127, 35], [126, 38], [122, 39], [120, 35], [122, 30], [120, 25], [115, 22],
+    [110, 20], [108, 15], [105, 10], [103, 8], [100, 7], [98, 10], [97, 15],
+    [94, 17], [92, 21], [89, 22], [86, 20], [83, 18], [80, 15], [77, 8],
+    [76, 10], [74, 15], [72, 20], [70, 22], [66, 25], [62, 25], [58, 26],
+    [55, 27], [52, 28], [50, 29], [48, 30], [44, 29], [42, 31], [39, 32],
+    [36, 36], [34, 36], [32, 38], [30, 40], [28, 42], [30, 45], [32, 48],
+    [35, 52], [38, 55], [40, 58], [35, 60], [32, 62],
+  ],
+  [ // Australia
+    [113, -22], [114, -28], [115, -33], [118, -35], [124, -33], [129, -32],
+    [132, -32], [135, -35], [137, -38], [140, -38], [145, -38], [149, -37],
+    [150, -35], [153, -32], [153, -27], [150, -23], [147, -19], [144, -15],
+    [142, -11], [140, -17], [137, -16], [135, -14], [132, -12], [130, -13],
+    [127, -14], [124, -16], [121, -19], [117, -20],
+  ],
+  [ // Greenland
+    [-58, 64], [-55, 68], [-52, 71], [-48, 74], [-42, 76], [-35, 76], [-30, 74],
+    [-25, 71], [-22, 70], [-28, 68], [-35, 66], [-42, 64], [-48, 61], [-53, 60],
+    [-56, 61],
+  ],
+  [ // United Kingdom
+    [-5, 50], [-3, 53], [-5, 56], [-4, 58], [-2, 57], [0, 53], [1, 51], [-2, 50],
+  ],
+  [ // Japan
+    [130, 31], [131, 33], [133, 34], [135, 34], [137, 35], [139, 36], [140, 38],
+    [141, 40], [141, 42], [142, 44], [144, 44], [142, 42], [141, 39], [139, 36],
+    [137, 34], [134, 34], [132, 33],
+  ],
+  [ // Borneo
+    [109, 1], [112, 3], [116, 4], [118, 1], [117, -3], [114, -4], [110, -3],
+  ],
+  [ // Sumatra
+    [95, 5], [98, 3], [101, 0], [104, -3], [106, -5], [103, -4], [100, 0], [96, 4],
+  ],
+  [ // New Guinea
+    [131, -1], [134, -2], [138, -4], [141, -5], [141, -8], [137, -7], [133, -4],
+  ],
+  [ // Java
+    [105, -6], [108, -7], [112, -7], [114, -8], [111, -8], [107, -7],
+  ],
+  [ // New Zealand
+    [167, -45], [169, -43], [172, -41], [174, -39], [176, -38], [178, -38],
+    [176, -40], [174, -41], [172, -43], [169, -45], [167, -46],
+  ],
+  [ // Madagascar
+    [44, -16], [47, -15], [50, -16], [49, -20], [47, -25], [44, -25], [43, -20],
+  ],
+];
+
+// Map frame (canvas px) and equirectangular projection, lat 85..-60.
+const MAP = { x: 520, y: 866, w: 488, h: 118 };
+function project(lon: number, lat: number): [number, number] {
   return [
-    MAP.x0 + Math.round(((lon + 180) / 360) * MAP.w),
-    MAP.y0 + Math.round(((80 - lat) / 135) * MAP.h),
+    MAP.x + ((lon + 180) / 360) * MAP.w,
+    MAP.y + ((85 - lat) / 145) * MAP.h,
   ];
 }
 
-function drawMap() {
-  // Dotted land, 6px pitch.
-  for (let row = 0; row <= 31; row++) {
-    for (let col = 0; col <= 85; col++) {
-      const lon = -180 + ((col * 6) / MAP.w) * 360;
-      const lat = 80 - ((row * 6) / MAP.h) * 135;
-      if (onLand(lon, lat)) disc(MAP.x0 + col * 6, MAP.y0 + row * 6, 2, BLUE);
-    }
-  }
-  // Ocean labels.
-  drawText(90, 330, 'PACIFIC', 1, GREY);
-  drawText(330, 350, 'ATLANTIC', 1, GREY);
-  drawText(430, 340, 'INDIAN', 1, GREY);
-  // Numbered pins.
-  for (const [n, lon, lat, dx, dy] of PINS) {
-    const [tx, ty] = proj(lon, lat);
-    const px2 = tx + dx, py2 = ty + dy;
-    if (dx || dy) line(tx, ty, px2, py2, RED);
-    disc(px2, py2, 8, RED);
-    ring(px2, py2, 8, LIGHT);
-    drawText(px2 - (n < 10 ? 3 : 6), py2 - 3, String(n), 1, LIGHT);
+// ---------------------------------------------------------- composition --
+// Fits body + " - SRC" into at most maxLines wrapped lines, trimming
+// words off the end of the body (never the source) when it runs long.
+function fitDetail(body: string, src: string, maxW: number, maxLines: number): string[] {
+  const suffix = " - " + src;
+  let text = body;
+  for (;;) {
+    const lines = wrap(text + suffix, 1, maxW);
+    if (lines.length <= maxLines) return lines;
+    const words = text.split(" ");
+    if (words.length <= 1) return lines.slice(0, maxLines);
+    words.pop();
+    text = words.join(" ");
   }
 }
 
-// ---------------------------------------------------------------- layout
-function sectionHead(x, y, label) {
-  drawText(x, y, label, 2, RED);
-  hline(x, y + 18, 46, RED);
-}
+// ------------------------------------------------------------ masthead --
+fillRect(0, 0, W, 88, NAVY);
+drawText("THE WORLD TODAY", 16, 12, 6, WHITE);
+drawText("SATURDAY 21 NOVEMBER 2026", 16, 60, 2, WHITE);
+drawText("55 STORIES * 24 PLACES", 1008 - textWidth("55 STORIES * 24 PLACES", 2), 16, 2, WHITE);
+drawText("DRAWN, NOT PHOTOGRAPHED", 1008 - textWidth("DRAWN, NOT PHOTOGRAPHED", 1), 44, 1, WHITE);
+drawText("ONE DAY * ONE PICTURE", 1008 - textWidth("ONE DAY * ONE PICTURE", 1), 58, 1, WHITE);
+fillRect(0, 88, W, 2, RED);
 
-// Masthead.
-rect(0, 0, W, 4, RED);
-drawText(24, 18, 'THE WORLD TODAY', 5, INK);
-drawText(640, 22, 'SATURDAY, 21 NOVEMBER 2026', 2, INK);
-drawText(640, 46, '50 STORIES - 20 PINS - 7 MOMENTS', 2, RED);
-drawText(24, 62, 'ONE DAY. ONE IMAGE. THE WHOLE WORLD\'S NEWS.', 2, GREY);
-hline(24, 88, 976, INK);
+// -------------------------------------------------------------- ticker --
+fillRect(0, 90, W, 26, [26, 26, 26]);
+drawText(TICKER_A, 16, 93, 1, WHITE);
+drawText(TICKER_B, 16, 104, 1, WHITE);
 
-// Lead story band.
-rect(24, 96, 976, 68, INK);
-drawText(40, 108, 'LEAD', 2, [232, 120, 110]);
-drawText(110, 106, 'RUSSIAN MISSILES HIT POLAND', 3, LIGHT);
-drawText(40, 138, 'NATO: GRAVE VIOLATION OF ITS AIRSPACE - WARSAW: DELIBERATE PROVOCATION - REUTERS', 2, [200, 205, 215]);
+// --------------------------------------------------------------- leads --
+const LEAD_X = [16, 351, 686];
+const LEAD_W = 322;
+LEADS.forEach((L, i) => {
+  const x = LEAD_X[i];
+  const y = 120;
+  fillRect(x, y, LEAD_W, 144, WHITE);
+  hline(x, y, LEAD_W, NAVY, 2);
+  hline(x, y + 142, LEAD_W, NAVY, 2);
+  vline(x, y, 144, NAVY, 2);
+  vline(x + LEAD_W - 2, y, 144, NAVY, 2);
+  const hl = wrap(L.head, 3, LEAD_W - 24);
+  let hy = y + 10;
+  for (const ln of hl.slice(0, 3)) {
+    drawText(ln, x + 12, hy, 3, NAVY);
+    hy += 22;
+  }
+  fillRect(x + 12, y + 80, 48, 3, RED);
+  const bl = wrap(L.body, 1, LEAD_W - 24);
+  let by = y + 90;
+  for (const ln of bl.slice(0, 4)) {
+    drawText(ln, x + 12, by, 1, [60, 60, 60]);
+    by += 9;
+  }
+  drawText(L.src, x + 12, y + 128, 1, RED);
+});
+fillRect(0, 266, W, 2, NAVY);
 
-// Map panel (left) + numbers panel (right).
-frame(24, 172, 536, 220, INK);
-rect(25, 173, 534, 22, SAND);
-sectionHead(36, 177, 'WHERE THE NEWS HAPPENED');
-drawMap();
-
-frame(576, 172, 424, 220, INK);
-rect(577, 173, 422, 22, SAND);
-sectionHead(588, 177, 'THE DAY IN NUMBERS');
-for (let i = 0; i < STATS.length; i++) {
-  const col = i % 2, row = Math.floor(i / 2);
-  const bx = 588 + col * 206, by = 206 + row * 60;
-  frame(bx, by, 196, 52, GREY);
-  drawText(bx + 8, by + 6, STATS[i][0], 3, RED);
-  drawText(bx + 8, by + 34, STATS[i][1], 1, INK);
-}
-
-// UTC timeline.
-frame(24, 400, 976, 86, INK);
-rect(25, 401, 974, 22, SAND);
-sectionHead(36, 405, 'THE DAY IN UTC - 21 NOVEMBER 2026');
-hline(48, 452, 928, INK);
-for (let i = 0; i < TIMELINE.length; i++) {
-  const cx = 90 + i * 140;
-  disc(cx, 452, 5, RED);
-  textCentered(cx, 428, TIMELINE[i][0], 2, RED);
-  textCentered(cx, 462, TIMELINE[i][1], 1, INK);
-  textCentered(cx, 472, TIMELINE[i][2], 1, GREY);
-}
-
-// Pin key.
-drawText(24, 496, PIN_KEY[0], 1, INK);
-drawText(24, 508, PIN_KEY[1], 1, INK);
-
-// Story grid: 5 columns x 10 rows.
+// ---------------------------------------------------------------- grid --
+const GRID_TOP = 268;
+const ROW_H = 44;
+const COL_X = [16, 267, 518, 769];
+const COL_W = 239;
 for (let i = 0; i < STORIES.length; i++) {
-  const col = i % 5, row = Math.floor(i / 5);
-  const x = 24 + col * 196, y = 530 + row * 45;
-  if (row % 2 === 0) rect(x - 4, y - 3, 192, 45, [240, 235, 220]);
-  // Number badge.
-  rect(x, y + 2, 18, 12, RED);
-  drawText(x + (i + 1 < 10 ? 6 : 3), y + 4, String(i + 1), 1, LIGHT);
-  // Headline, two lines.
-  drawText(x + 22, y, STORIES[i][0], 2, INK);
-  drawText(x + 22, y + 15, STORIES[i][1], 2, INK);
-  // Source.
-  drawText(x + 22, y + 31, STORIES[i][2], 1, RED);
+  const s = STORIES[i];
+  const col = i % 4;
+  const row = Math.floor(i / 4);
+  const x = COL_X[col];
+  const y = GRID_TOP + row * ROW_H;
+  fillRect(x, y + 2, 7, 7, BEATS[s.beat]);
+  const hl = wrap(s.head, 2, COL_W - 11);
+  drawText(hl[0] ?? "", x + 11, y, 2, INK);
+  if (hl[1]) drawText(hl[1], x + 11, y + 14, 2, INK);
+  const dl = fitDetail(s.body, s.src, COL_W - 11, 2);
+  drawText(dl[0] ?? "", x + 11, y + 28, 1, [70, 70, 70]);
+  if (dl[1]) drawText(dl[1], x + 11, y + 36, 1, [70, 70, 70]);
+  if (row < 12) hline(x, y + ROW_H - 2, COL_W, [222, 216, 203]);
 }
+fillRect(0, 838, W, 2, NAVY);
 
-// Footer.
-hline(24, 988, 976, INK);
-drawText(24, 996, 'ALL STORIES FIRST REPORTED ON 21 NOVEMBER 2026 (UTC) UNLESS NOTED - EACH STORY NAMES ITS SOURCE', 1, GREY);
-drawText(24, 1006, 'JUDGE: THIS IMAGE IS THE WHOLE DAY - 50 STORIES, 20 PINS, 7 UTC MOMENTS, ZERO PHOTOS, ALL DRAWN BY CODE.', 1, GREY);
+// ------------------------------------------------------- timeline + map --
+drawText("THE DAY IN TIME - UTC", 16, 848, 2, NAVY);
+TIMELINE.forEach(([t, ev, src], i) => {
+  const y = 874 + i * 19;
+  drawText(t, 16, y, 1, RED);
+  drawText(ev, 56, y, 1, INK);
+  drawText(src, 504 - textWidth(src, 1), y, 1, GREY);
+});
 
-// ---------------------------------------------------------------- output
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
+drawText("THE DAY IN PLACES - 24 PINS", 520, 848, 2, NAVY);
+fillRect(MAP.x, MAP.y, MAP.w, MAP.h, SEA);
+for (let lon = -150; lon <= 150; lon += 30) {
+  const [gx] = project(lon, 85);
+  vline(Math.round(gx), MAP.y, MAP.h, [205, 214, 224]);
+}
+for (let lat = 60; lat >= -30; lat -= 30) {
+  const [, gy] = project(-180, lat);
+  hline(MAP.x, Math.round(gy), MAP.w, [205, 214, 224]);
+}
+for (const poly of CONTINENTS) {
+  fillPoly(poly.map(([lo, la]) => project(lo, la)), LAND);
+}
+hline(MAP.x, MAP.y, MAP.w, INK);
+hline(MAP.x, MAP.y + MAP.h - 1, MAP.w, INK);
+vline(MAP.x, MAP.y, MAP.h, INK);
+vline(MAP.x + MAP.w - 1, MAP.y, MAP.h, INK);
+const LABEL_OFF: Record<string, [number, number]> = {
+  KYIV: [8, -9],
+  WARSAW: [-46, -14],
+  "NEW YORK": [8, -9],
+  ANTALYA: [-52, 2],
+  GAZA: [-4, 8],
+  LIMA: [8, -9],
+  JAKARTA: [-50, -9],
+  SEOUL: [-38, -9],
+};
+for (const [name, lon, lat] of PINS) {
+  const [px2, py2] = project(lon, lat);
+  const cx = Math.round(px2);
+  const cy = Math.round(py2);
+  disc(cx, cy, 5, WHITE);
+  disc(cx, cy, 3, RED);
+  if (name) {
+    const [dx, dy] = LABEL_OFF[name] ?? [8, -9];
+    drawText(name, cx + dx, cy + dy, 1, INK);
+  }
+}
+vline(512, 844, 144, [200, 195, 185]);
+
+// -------------------------------------------------------------- footer --
+hline(16, 992, 992, [200, 195, 185]);
+const LEGEND: Array<[string, [number, number, number]]> = [
+  ["CONFLICT", BEATS.C],
+  ["POLITICS", BEATS.P],
+  ["MARKETS", BEATS.M],
+  ["CLIMATE", BEATS.L],
+  ["HEALTH", BEATS.H],
+  ["SCIENCE", BEATS.S],
+  ["SPORT", BEATS.T],
+  ["WORLD", BEATS.W],
+];
+let lx = 16;
+for (const [name, col] of LEGEND) {
+  fillRect(lx, 999, 6, 6, col);
+  lx += 9;
+  drawText(name, lx, 998, 1, INK);
+  lx += textWidth(name, 1) + 12;
+}
+drawText(
+  "SOURCES: AP * BBC * REUTERS * FT * WSJ * GUARDIAN * AL JAZEERA * PANA * WASHINGTON POST * SOFX * ISW * UNFCCC * IMD * ONE TURN * HORIZON * IQMIA * BVM SPORTS",
+  16,
+  1010,
+  1,
+  GREY,
+);
+
+// ---------------------------------------------------------------- write --
+const outDir = process.env.MAKEFUN_OUTPUT_DIR || "/output";
 mkdirSync(outDir, { recursive: true });
-const bytes = writePng(join(outDir, 'entry.png'));
-console.log(`wrote ${bytes} bytes to ${join(outDir, 'entry.png')}`);
+writeFileSync(outDir + "/entry.png", encodePNG(W, H, px));
